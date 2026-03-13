@@ -6,27 +6,67 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <algorithm>
 
 using std::string;
 
 constexpr int PORT = 8080;
 constexpr int BUFFER_SIZE = 1024;
 
+struct Client {
+    string name;
+    int socket;
+    sockaddr_in address;
+};
+
+std::vector<Client> clients;
+std::mutex clients_mutex;
+
+void handle_client(int client_fd, sockaddr_in client_addr) {
+    char buffer[BUFFER_SIZE] = {0};
+
+    // First message = username because we want to store the username with each client
+    int bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
+    if (bytes <= 0) {
+        close(client_fd);
+        return;
+    }
+
+    string username(buffer, bytes);
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        clients.push_back({username, client_fd, client_addr});
+    }
+
+    // Read loop for this client
+    while (true) {
+        bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
+        if (bytes <= 0) break;
+        string message(buffer, bytes);
+        std::cout << "Received from " << username << ": " << message << std::endl;
+
+        // For now: echo message back only to the sender
+        if (send(client_fd, message.data(), message.size(), 0) < 0) break;
+    }
+
+    // Disconnect
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        clients.erase(std::remove_if(clients.begin(), clients.end(),
+                                     [client_fd](const Client &c) {
+                                         return c.socket == client_fd;
+                                     }), clients.end());
+    }
+
+    close(client_fd);
+}
+
 int main() {
-    int server_fd, new_socket;
+    int server_fd;
     struct sockaddr_in address;
     int opt = 1;
-
-    struct client {
-        string name;
-        int socket;
-        sockaddr_in address;
-    };
-    
-    // Clients
-    std::vector<client> clients;
-
-    socklen_t addrlen = sizeof(address);
 
     // Creating socket file descriptor
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
@@ -45,7 +85,7 @@ int main() {
     address.sin_port = htons(PORT);
 
     // Bind the socket to the network address and port
-    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+    if (bind(server_fd, (struct sockaddr *) &address, sizeof(address)) < 0) {
         perror("bind failed");
         exit(EXIT_FAILURE);
     }
@@ -58,56 +98,22 @@ int main() {
     std::cout << "Server listening on port " << PORT << std::endl;
 
     // Start listening for incoming connections
-    while (1) {
-
+    while (true) {
         // Accept incoming connection
-        new_socket = accept(server_fd, (struct sockaddr*)&address, &addrlen);
-        if (new_socket < 0) {
+        sockaddr_in client_addr{};
+        socklen_t addrlen = sizeof(client_addr);
+
+        int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &addrlen);
+        if (client_fd < 0) {
             perror("accept");
-            exit(EXIT_FAILURE);
-        }
-
-        char buffer[BUFFER_SIZE] = {0};
-
-        int bytes = recv(new_socket, buffer, BUFFER_SIZE, 0);
-        if (bytes <= 0) {
-            close(new_socket);
             continue;
         }
 
-        string username(buffer, bytes);
+        std::thread(handle_client, client_fd, client_addr).detach();
 
-        clients.push_back({username, new_socket, address});
-
-        std::cout << "Client connected: " << username << std::endl;
-        std::cout << "Total clients: " << clients.size() << std::endl;
-
-        while (true) {
-            bytes = recv(new_socket, buffer, BUFFER_SIZE, 0);
-
-            if (bytes == 0) {
-                clients.erase(std::remove_if(clients.begin(), clients.end(), [new_socket](const client& c) {
-                    return c.socket == new_socket;
-                }), clients.end());
-                std::cout << "Client disconnected: " << username << std::endl;
-                break;
-            }
-
-            if (bytes < 0) {
-                perror("recv");
-                break;
-            }
-
-            string message(buffer, bytes);
-            std::cout << "Received from " << username << ": " << message << std::endl;
-
-            ssize_t sent = send(new_socket, message.data(), message.size(), 0);
-            if (sent < 0) {
-                perror("send");
-                break;
-            }
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            std::cout << "Total clients: " << clients.size() << std::endl;
         }
-
-        close(new_socket);
     }
 }
