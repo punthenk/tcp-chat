@@ -1,7 +1,5 @@
 #include <iostream>
-#include <cstring>
 #include <string>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -28,6 +26,7 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
     char buffer[BUFFER_SIZE] = {0};
 
     // First message = username because we want to store the username with each client
+    // and that is the first message sent by the client
     int bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
     if (bytes <= 0) {
         close(client_fd);
@@ -45,10 +44,16 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
         bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
         if (bytes <= 0) break;
         string message(buffer, bytes);
-        std::cout << "Received from " << username << ": " << message << std::endl;
+        std::cout << username << ": " << message << std::endl;
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            for (const Client& client : clients) {
+                if (client.socket == client_fd) continue;
+                send(client.socket, (username + ": " + message).c_str(), username.size() + 2 + message.size(), 0);
+            }
+        }
 
-        // For now: echo message back only to the sender
-        if (send(client_fd, message.data(), message.size(), 0) < 0) break;
+        memset(buffer, 0, BUFFER_SIZE);
     }
 
     // Disconnect
@@ -65,7 +70,7 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
 
 int main() {
     int server_fd;
-    struct sockaddr_in address;
+    struct sockaddr_in address{};
     int opt = 1;
 
     // Creating socket file descriptor

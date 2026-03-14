@@ -1,7 +1,8 @@
 #include <iostream>
 #include <string>
 #include <cstring>
-#include <sys/types.h>
+#include <thread>
+#include <mutex>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -11,6 +12,26 @@ using std::string;
 
 constexpr int PORT = 8080;
 constexpr int BUFFER_SIZE = 1024;
+const string PROMPT = "Enter your message: ";
+std::mutex io_mutex;
+
+void receive_loop(int sock) {
+    char buffer[BUFFER_SIZE];
+    while (true) {
+        const int bytes = recv(sock, buffer, BUFFER_SIZE, 0);
+        if (bytes <= 0) {
+            std::lock_guard<std::mutex> lock(io_mutex);
+            std::cout << "\nServer disconnected." << std::endl;
+            break;
+        }
+
+        std::lock_guard<std::mutex> lock(io_mutex);
+        // Clear the current input line before printing the incoming message.
+        std::cout << "\r\x1b[2K" << string(buffer, bytes) << std::endl;
+        std::cout << PROMPT << std::flush;
+        memset(buffer, 0, BUFFER_SIZE);
+    }
+}
 
 int main() {
     int sock = 0;
@@ -46,33 +67,20 @@ int main() {
     // Send username
     send(sock, username.c_str(), username.size(), 0);
 
-    while (1) {
-        std::cout << "Enter your message: ";
+    std::thread receiver(receive_loop, sock);
+    receiver.detach();
+
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lock(io_mutex);
+            std::cout << PROMPT << std::flush;
+        }
         std::getline(std::cin, message);
 
-        if (!std::cin) {
-            break;
-        }
+        if (!std::cin || message == "quit") break;
+        if (message.empty()) continue;
 
-        if (message == "quit") {
-            break;
-        }
-
-        ssize_t sent = send(sock, message.c_str(), message.size(), 0);
-        if (sent < 0) {
-            perror("send");
-            break;
-        }
-
-        int bytes = recv(sock, buffer, BUFFER_SIZE, 0);
-        if (bytes <= 0) {
-            std::cout << "Server disconnected." << std::endl;
-            break;
-        }
-
-        std::cout << "Echo: " << string(buffer, bytes) << std::endl;
-
-        memset(buffer, 0, BUFFER_SIZE);
+        send(sock, message.c_str(), message.size(), 0);
     }
 
     close(sock);
