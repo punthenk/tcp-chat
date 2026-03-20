@@ -15,6 +15,7 @@ constexpr int BUFFER_SIZE = 1024;
 
 struct Client {
     string name;
+    int color;
     int socket;
     sockaddr_in address;
 };
@@ -34,9 +35,11 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
     }
 
     string username(buffer, bytes);
+    int user_color = 0;
     {
         std::lock_guard<std::mutex> lock(clients_mutex);
-        clients.push_back({username, client_fd, client_addr});
+        user_color = rand() % 9; // Assign a random color (0-8) to the client
+        clients.push_back({username, user_color, client_fd, client_addr});
     }
 
     // Read loop for this client
@@ -49,7 +52,8 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
             std::lock_guard<std::mutex> lock(clients_mutex);
             for (const Client& client : clients) {
                 if (client.socket == client_fd) continue;
-                send(client.socket, (username + ": " + message).c_str(), username.size() + 2 + message.size(), 0);
+                const string wire = "MSG|" + username + "|" + std::to_string(user_color) + "|" + message;
+                send(client.socket, wire.c_str(), wire.size(), 0);
             }
         }
 

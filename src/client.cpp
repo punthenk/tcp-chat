@@ -15,21 +15,38 @@ constexpr int BUFFER_SIZE = 1024;
 const string PROMPT = "Enter your message: ";
 std::mutex io_mutex;
 
+string colorize_name(const string& name, int color) {
+    static const int ansi_codes[9] = {31, 32, 33, 34, 35, 36, 91, 92, 94};
+    const int ansi = ansi_codes[(color < 0 ? 0 : color % 9)];
+    return "\033[" + std::to_string(ansi) + "m" + name + "\033[0m";
+}
+
 void receive_loop(int sock) {
     char buffer[BUFFER_SIZE];
     while (true) {
         const int bytes = recv(sock, buffer, BUFFER_SIZE, 0);
+        string raw(buffer, bytes);
         if (bytes <= 0) {
             std::lock_guard<std::mutex> lock(io_mutex);
             std::cout << "\nServer disconnected." << std::endl;
             break;
         }
 
-        std::lock_guard<std::mutex> lock(io_mutex);
-        // Clear the current input line before printing the incoming message.
-        std::cout << "\r\x1b[2K" << string(buffer, bytes) << std::endl;
-        std::cout << PROMPT << std::flush;
-        memset(buffer, 0, BUFFER_SIZE);
+        if (raw.rfind("MSG|", 0) == 0) {
+            const size_t p1 = raw.find('|', 4);
+            const size_t p2 = (p1 == string::npos) ? string::npos : raw.find('|', p1 + 1);
+
+            if (p1 != string::npos && p2 != string::npos) {
+                const string username = raw.substr(4, p1 - 4);
+                const int color = std::stoi(raw.substr(p1 + 1, p2 - p1 - 1));
+                const string text = raw.substr(p2 + 1);
+
+                std::lock_guard<std::mutex> lock(io_mutex);
+                std::cout << "\r\x1b[2K" << colorize_name(username, color) << ": " << text << std::endl;
+                std::cout << PROMPT << std::flush;
+                continue;
+            }
+        }
     }
 }
 
