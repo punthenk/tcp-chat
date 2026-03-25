@@ -8,6 +8,7 @@ public:
     long long int calculatePublicKey(long long int g, long long int privateKey, long long int p);
     unsigned long long int modPow(long long int base, long long int exp, long long int mod);
     long long int computeSharedSecret(long long int otherPublicKey);
+    long long int getPublicKey();
 
 private:
     unsigned long long p; // prime
