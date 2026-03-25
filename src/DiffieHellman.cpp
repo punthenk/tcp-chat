@@ -33,3 +33,11 @@ unsigned long long int DiffieHellman::modPow(long long int base, long long int e
 long long int DiffieHellman::calculatePublicKey(long long int g, long long int privateKey, long long int p) {
     return modPow(g, privateKey, p);
 }
+
+long long int DiffieHellman::getPublicKey() {
+    return publicKey;
+}
+
+long long int DiffieHellman::computeSharedSecret(long long int otherPublicKey) {
+    return modPow(otherPublicKey, privateKey, p);
+}
