@@ -18,7 +18,7 @@ long long int DiffieHellman::generatePrivateKey(unsigned long long p) {
     return dist(gen);
 }
 
-long long int modPow(long long int base, long long int exp, long long int mod) {
+unsigned long long int DiffieHellman::modPow(long long int base, long long int exp, long long int mod) {
     long long int result = 1;
     base = base %= mod;
     while (exp > 0) {
