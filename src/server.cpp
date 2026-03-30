@@ -7,6 +7,7 @@
 #include <thread>
 #include <mutex>
 #include <algorithm>
+#include <optional>
 
 using std::string;
 
@@ -15,13 +16,24 @@ constexpr int BUFFER_SIZE = 1024;
 
 struct Client {
     string name;
-    int color;
     int socket;
     sockaddr_in address;
+
+    Client(string name, int socket, sockaddr_in address)
+        : name(std::move(name)), socket(socket), address(address) {}
 };
 
-std::vector<Client> clients;
-std::mutex clients_mutex;
+struct Chat {
+    Client client1;
+    Client client2;
+
+    Chat(Client client1, Client client2) : client1(client1), client2(client2) {}
+};
+
+std::optional<Client> waiting_client;
+
+std::vector<Chat> chats;
+std::mutex chats_mutex;
 
 void handle_client(int client_fd, sockaddr_in client_addr) {
     char buffer[BUFFER_SIZE] = {0};
@@ -35,11 +47,17 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
     }
 
     string username(buffer, bytes);
-    int user_color = 0;
     {
-        std::lock_guard<std::mutex> lock(clients_mutex);
-        user_color = rand() % 9; // Assign a random color (0-8) to the client
-        clients.push_back({username, user_color, client_fd, client_addr});
+        std::lock_guard<std::mutex> lock(chats_mutex);
+        Client client(username, client_fd, client_addr);
+
+        if (waiting_client.has_value()) {
+            Chat chat(client, waiting_client.value());
+            chats.push_back(chat);
+            waiting_client.reset();
+        } else {
+            waiting_client = client;
+        }
     }
 
     // Read loop for this client
@@ -48,12 +66,26 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
         if (bytes <= 0) break;
         string message(buffer, bytes);
         std::cout << username << ": " << message << std::endl;
+        std::cout << "[debug] chats=" << chats.size() << std::endl;
+        for (const Chat &chat: chats) {
+            std::cout
+                    << "[debug] chat: "
+                    << chat.client1.name << "(" << chat.client1.socket << ") <-> "
+                    << chat.client2.name << "(" << chat.client2.socket << ")"
+                    << std::endl;
+        }
+        std::cout << "Waiting client: " << waiting_client->name << std::endl;
         {
-            std::lock_guard<std::mutex> lock(clients_mutex);
-            for (const Client& client : clients) {
-                if (client.socket == client_fd) continue;
-                const string wire = "MSG|" + username + "|" + std::to_string(user_color) + "|" + message;
-                send(client.socket, wire.c_str(), wire.size(), 0);
+            std::lock_guard<std::mutex> lock(chats_mutex);
+            const string wire = username + ": " + message;
+            for (const Chat& chat : chats) {
+                if (chat.client1.socket == client_fd) {
+                    std::cout << "sending message to client2\n";
+                    send(chat.client2.socket, wire.c_str(), wire.size(), 0);
+                } else if (chat.client2.socket == client_fd) {
+                    std::cout << "sending message to client1\n";
+                    send(chat.client1.socket, wire.c_str(), wire.size(), 0);
+                }
             }
         }
 
@@ -62,11 +94,14 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
 
     // Disconnect
     {
-        std::lock_guard<std::mutex> lock(clients_mutex);
-        clients.erase(std::remove_if(clients.begin(), clients.end(),
-                                     [client_fd](const Client &c) {
-                                         return c.socket == client_fd;
-                                     }), clients.end());
+        std::lock_guard<std::mutex> lock(chats_mutex);
+        chats.erase(std::remove_if(chats.begin(), chats.end(),
+                                     [client_fd](const Chat &chat) {
+                                         if (chat.client1.socket == client_fd)
+                                             return chat.client1.socket;
+                                         else
+                                             return chat.client2.socket;
+                                     }), chats.end());
     }
 
     close(client_fd);
@@ -121,8 +156,9 @@ int main() {
         std::thread(handle_client, client_fd, client_addr).detach();
 
         {
-            std::lock_guard<std::mutex> lock(clients_mutex);
-            std::cout << "Total clients: " << clients.size() << std::endl;
+            std::lock_guard<std::mutex> lock(chats_mutex);
+            std::cout << "Total chats: " << chats.size() << std::endl;
+            std::cout << "Waiting client: " << waiting_client->name << std::endl;
         }
     }
 }
