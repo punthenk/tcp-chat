@@ -66,14 +66,6 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
         if (bytes <= 0) break;
         string message(buffer, bytes);
         std::cout << username << ": " << message << std::endl;
-        std::cout << "[debug] chats=" << chats.size() << std::endl;
-        for (const Chat &chat: chats) {
-            std::cout
-                    << "[debug] chat: "
-                    << chat.client1.name << "(" << chat.client1.socket << ") <-> "
-                    << chat.client2.name << "(" << chat.client2.socket << ")"
-                    << std::endl;
-        }
         std::cout << "Waiting client: " << waiting_client->name << std::endl;
         {
             std::lock_guard<std::mutex> lock(chats_mutex);
@@ -95,13 +87,35 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
     // Disconnect
     {
         std::lock_guard<std::mutex> lock(chats_mutex);
+
+        std::optional<Client> remaining_client;
+
+        if (waiting_client.has_value() && waiting_client->socket == client_fd) {
+            waiting_client.reset();
+        }
+
         chats.erase(std::remove_if(chats.begin(), chats.end(),
-                                     [client_fd](const Chat &chat) {
-                                         if (chat.client1.socket == client_fd)
-                                             return chat.client1.socket;
-                                         else
-                                             return chat.client2.socket;
+                                     [client_fd, &remaining_client](const Chat &chat) {
+                                         if (chat.client1.socket == client_fd) {
+                                             remaining_client = chat.client2;
+                                             return true;
+                                         }
+                                         if (chat.client2.socket == client_fd) {
+                                             remaining_client = chat.client1;
+                                             return true;
+                                         }
+
+                                         return false;
                                      }), chats.end());
+
+        if (remaining_client.has_value()) {
+            if (waiting_client.has_value()) {
+                chats.emplace_back(remaining_client.value(), waiting_client.value());
+                waiting_client.reset();
+            } else {
+                waiting_client = remaining_client;
+            }
+        }
     }
 
     close(client_fd);
