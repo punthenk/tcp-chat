@@ -30,6 +30,7 @@ struct Chat {
     unsigned long long pubkey1 = 0;
     unsigned long long pubkey2 = 0;
     bool paired = false;
+    bool handshake_ready = false;
     Chat(Client client1, Client client2) : client1(client1), client2(client2) {}
 };
 
@@ -40,7 +41,6 @@ std::mutex pair_mutex;
 
 std::condition_variable handshake_cv;
 std::mutex handshake_mutex;
-bool handshake_ready = false;
 
 std::vector<Chat> chats;
 std::mutex chats_mutex;
@@ -70,13 +70,13 @@ bool do_dh_handshake(Client client, Chat& chat) {
     {
         std::unique_lock<std::mutex> lock(handshake_mutex);
         if (chat.pubkey1 != 0 && chat.pubkey2 != 0) {
-            handshake_ready = true;
+            chat.handshake_ready = true;
             handshake_cv.notify_one();
         }
     }
     {
         std::unique_lock<std::mutex> lock(handshake_mutex);
-        handshake_cv.wait(lock, [] { return handshake_ready; });
+        handshake_cv.wait(lock, [&chat] { return chat.handshake_ready; });
     }
 
     std::cout << "Pubkey1: " << chat.pubkey1 << ", Username: " << chat.client1.name << std::endl;
@@ -109,7 +109,8 @@ bool do_dh_handshake(Client client, Chat& chat) {
 Chat* find_my_chat(int client_fd) {
     std::lock_guard<std::mutex> lock(chats_mutex);
     for (Chat& chat: chats) {
-        if (chat.client1.socket == client_fd || chat.client2.socket == client_fd) {
+        if (chat.client1.socket == client_fd || chat.client2.socket == client_fd && chat.paired == false) {
+            std::cout << "Chat: " << chat.client1.name << " : " << chat.client2.name << std::endl;
             return &chat;
         }
     }
@@ -144,8 +145,8 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
             waiting_client = client;
         }
     }
+    Chat *my_chat = nullptr;
     {
-        Chat *my_chat = nullptr;
         if (other_client) {
             my_chat = find_my_chat(client_fd);
             can_connect = do_dh_handshake(client, *my_chat);
@@ -169,8 +170,8 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
 
     // Read loop for this client
     if (can_connect) {
-        Chat *chat = find_my_chat(client_fd);
-        while (true && chat != nullptr) {
+        my_chat->paired = true;
+        while (true && my_chat != nullptr) {
             bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
             if (bytes <= 0) break;
             string message(buffer, bytes);
@@ -180,12 +181,14 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
                 std::lock_guard<std::mutex> lock(chats_mutex);
                 const string wire = username + ": " + message;
                 MessageType type = MSG_CHAT;
-                if (chat->client1.socket == client_fd) {
-                    send(chat->client2.socket, &type, 1, 0);
-                    send(chat->client2.socket, wire.c_str(), wire.size(), 0);
-                } else if (chat->client2.socket == client_fd) {
-                    send(chat->client1.socket, &type, 1, 0);
-                    send(chat->client1.socket, wire.c_str(), wire.size(), 0);
+                if (my_chat->client1.socket == client_fd) {
+                    std::cout << "Sending message to client2" << std::endl;
+                    send(my_chat->client2.socket, &type, 1, 0);
+                    send(my_chat->client2.socket, wire.c_str(), wire.size(), 0);
+                } else if (my_chat->client2.socket == client_fd) {
+                    std::cout << "Sending message to client2" << std::endl;
+                    send(my_chat->client1.socket, &type, 1, 0);
+                    send(my_chat->client1.socket, wire.c_str(), wire.size(), 0);
                 }
             }
 
