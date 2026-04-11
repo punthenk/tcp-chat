@@ -7,8 +7,6 @@ DiffieHellman::DiffieHellman() {
     g = 2;
     privateKey = generatePrivateKey(p);
     publicKey = calculatePublicKey(g, privateKey, p);
-    std::cout << "Public Key: " << publicKey << std::endl;
-    std::cout << "Private Key: " << privateKey << std::endl;
 }
 
 long long int DiffieHellman::generatePrivateKey(unsigned long long p) {

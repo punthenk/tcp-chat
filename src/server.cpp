@@ -46,9 +46,6 @@ std::vector<Chat> chats;
 std::mutex chats_mutex;
 
 bool do_dh_handshake(Client client, Chat& chat) {
-    std::cout << "Call the handshake method" << std::endl;
-
-
     // 1. Send a request to client to send public key
     MessageType type = MSG_REQ_PUBKEY;
     send(client.socket, &type, 1, 0);
@@ -58,7 +55,6 @@ bool do_dh_handshake(Client client, Chat& chat) {
     ssize_t bytes = recv(client.socket, &pubkey, sizeof(pubkey), 0);
     if (bytes <= 0)
         return false;
-    std::cout << "Received pubkey: " << pubkey << std::endl;
 
     // 3. Store the public key in the Chat struct
     if (chat.client1.socket == client.socket) {
@@ -67,6 +63,8 @@ bool do_dh_handshake(Client client, Chat& chat) {
         chat.pubkey2 = pubkey;
     }
 
+    // Check if both public keys are available and if so, proceed
+    // and notify the other waiting thread
     {
         std::unique_lock<std::mutex> lock(handshake_mutex);
         if (chat.pubkey1 != 0 && chat.pubkey2 != 0) {
@@ -74,35 +72,31 @@ bool do_dh_handshake(Client client, Chat& chat) {
             handshake_cv.notify_one();
         }
     }
+    // For the first thread we wait here until the other thread
+    // has also put his public key in the Chat, and notify us to proceed
     {
         std::unique_lock<std::mutex> lock(handshake_mutex);
         handshake_cv.wait(lock, [&chat] { return chat.handshake_ready; });
     }
 
-    std::cout << "Pubkey1: " << chat.pubkey1 << ", Username: " << chat.client1.name << std::endl;
-    std::cout << "Pubkey2: " << chat.pubkey2 << ", Username: " << chat.client2.name << std::endl;
-
-
+    // Send the client the other clients public key, for them to compute the shared secret
+    long long other_pubkey;
+    type = MSG_PUBKEY;
     if (chat.client1.socket != client.socket) {
-        long long other_pubkey = chat.pubkey1;
-        MessageType type = MSG_PUBKEY;
-        send(client.socket, &type, 1, 0);
-        send(client.socket, &other_pubkey, sizeof(other_pubkey), 0);
-    } else if (chat.client2.socket != client.socket) {
-        long long other_pubkey = chat.pubkey2;
-        MessageType type = MSG_PUBKEY;
-        send(client.socket, &type, 1, 0);
-        send(client.socket, &other_pubkey, sizeof(other_pubkey), 0);
+        other_pubkey = chat.pubkey1;
+    } else {
+        other_pubkey = chat.pubkey2;
     }
+    send(client.socket, &type, 1, 0);
+    send(client.socket, &other_pubkey, sizeof(other_pubkey), 0);
 
+    // Check if the client computed the shared secret successfully
     MessageType success_computed_secret;
     bytes = recv(client.socket, &success_computed_secret, sizeof(success_computed_secret), 0);
     if (bytes <= 0 || success_computed_secret == MSG_COMPUTE_SHARED_SECRET_FAILING) {
-        std::cout << "Failed to compute shared secret successfully" << std::endl;
         return false;
     }
 
-    std::cout << "Shared secret is computed successfully" << std::endl;
     return true;
 }
 
@@ -150,46 +144,49 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
         if (other_client) {
             my_chat = find_my_chat(client_fd);
             can_connect = do_dh_handshake(client, *my_chat);
-            std::cout << "Found the other client" << std::endl;
         } else {
             string msg = "Waiting for other client...";
-            MessageType type = MSG_CHAT;
+            MessageType type = MSG_WAIT;
             send(client.socket, &type, 1, 0);
             send(client.socket, msg.c_str(), msg.size(), 0);
             {
                 std::unique_lock<std::mutex> lock(pair_mutex);
                 pair_cv.wait(lock);
-                my_chat = find_my_chat(client_fd);
             }
+            my_chat = find_my_chat(client_fd);
             if (my_chat != nullptr) {
                 can_connect = do_dh_handshake(client, *my_chat);
-                std::cout << "Found the other client as waiting" << std::endl;
             }
         }
     }
 
     // Read loop for this client
     if (can_connect) {
+        MessageType type = MSG_CONNECT_TO_CHAT;
+        send(client_fd, &type, 1, 0);
+
         my_chat->paired = true;
-        while (true && my_chat != nullptr) {
+        int other_client_socket;
+
+        if (my_chat->client1.socket == client_fd) {
+            other_client_socket = my_chat->client2.socket;
+        } else {
+            other_client_socket = my_chat->client1.socket;
+        }
+
+        while (my_chat->paired == true) {
             bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
-            if (bytes <= 0) break;
+
+            if (bytes <= 0)
+                break;
+
             string message(buffer, bytes);
-            std::cout << username << ": " << message << std::endl;
-            std::cout << "Waiting client: " << waiting_client->name << std::endl;
             {
                 std::lock_guard<std::mutex> lock(chats_mutex);
-                const string wire = username + ": " + message;
+                const string wire = "<" + username + "> " + message;
                 MessageType type = MSG_CHAT;
-                if (my_chat->client1.socket == client_fd) {
-                    std::cout << "Sending message to client2" << std::endl;
-                    send(my_chat->client2.socket, &type, 1, 0);
-                    send(my_chat->client2.socket, wire.c_str(), wire.size(), 0);
-                } else if (my_chat->client2.socket == client_fd) {
-                    std::cout << "Sending message to client2" << std::endl;
-                    send(my_chat->client1.socket, &type, 1, 0);
-                    send(my_chat->client1.socket, wire.c_str(), wire.size(), 0);
-                }
+                send(other_client_socket, &type, 1, 0);
+                send(other_client_socket, wire.c_str(), wire.size(), 0);
             }
 
             memset(buffer, 0, BUFFER_SIZE);
@@ -199,35 +196,21 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
     // Disconnect
     {
         std::lock_guard<std::mutex> lock(chats_mutex);
-
-        std::optional<Client> remaining_client;
-
+        my_chat->paired = false;
         if (waiting_client.has_value() && waiting_client->socket == client_fd) {
             waiting_client.reset();
         }
 
         chats.erase(std::remove_if(chats.begin(), chats.end(),
-                                     [client_fd, &remaining_client](const Chat &chat) {
-                                         if (chat.client1.socket == client_fd) {
-                                             remaining_client = chat.client2;
-                                             return true;
-                                         }
-                                         if (chat.client2.socket == client_fd) {
-                                             remaining_client = chat.client1;
-                                             return true;
-                                         }
-
-                                         return false;
-                                     }), chats.end());
-
-        if (remaining_client.has_value()) {
-            if (waiting_client.has_value()) {
-                chats.emplace_back(remaining_client.value(), waiting_client.value());
-                waiting_client.reset();
-            } else {
-                waiting_client = remaining_client;
-            }
-        }
+                                   [client_fd](const Chat &chat) {
+                                       if (chat.client1.socket == client_fd) {
+                                           return true;
+                                       }
+                                       if (chat.client2.socket == client_fd) {
+                                           return true;
+                                       }
+                                       return false;
+                                   }), chats.end());
     }
 
     close(client_fd);

@@ -14,11 +14,11 @@ using std::string;
 
 constexpr int PORT = 8080;
 constexpr int BUFFER_SIZE = 1024;
-const string PROMPT = "Enter your message: ";
+const string PROMPT = "> ";
 std::mutex io_mutex;
 DiffieHellman dh;
 
-void receive_loop(int sock) {
+void receive_loop(int sock, string username) {
     char buffer[BUFFER_SIZE];
     while (true) {
         uint8_t type;
@@ -31,7 +31,7 @@ void receive_loop(int sock) {
         switch (type) {
             case MSG_REQ_PUBKEY: {
                 unsigned long long pubkey = dh.getPublicKey();
-                std::cout << "Requested public key, and now sending" << std::endl;
+                std::cout << "\r\x1b[2K" << "Trying to connect to other client..." << std::endl;
                 send(sock, &pubkey, sizeof(pubkey), 0);
                 break;
             }
@@ -47,7 +47,23 @@ void receive_loop(int sock) {
                 char buffer[BUFFER_SIZE];
                 int len = recv(sock, buffer, BUFFER_SIZE, 0);
                 string msg(buffer, len);
+                {
+                    std::lock_guard<std::mutex> lock(io_mutex);
+                    std::cout << "\r\033[K";
+                    std::cout << msg << "\n";
+                    std::cout << PROMPT << std::flush;
+                }
+                break;
+            }
+            case MSG_WAIT: {
+                char buffer[BUFFER_SIZE];
+                int len = recv(sock, buffer, BUFFER_SIZE, 0);
+                string msg(buffer, len);
                 std::cout << "\r\x1b[2K" << msg << std::endl;
+                break;
+            }
+            case MSG_CONNECT_TO_CHAT: {
+                std::cout << "\r\x1b[2K\r" << "**** You are connect to a chat as " << username << "****" << std::endl;
                 std::cout << PROMPT << std::flush;
                 break;
             }
@@ -92,18 +108,22 @@ int main() {
     // Send username
     send(sock, username.c_str(), username.size(), 0);
 
-    std::thread receiver(receive_loop, sock);
+    std::thread receiver(receive_loop, sock, username);
     receiver.detach();
 
+    std::cout << PROMPT << std::flush;
+
     while (true) {
-        {
-            std::lock_guard<std::mutex> lock(io_mutex);
-            std::cout << PROMPT << std::flush;
-        }
         std::getline(std::cin, message);
 
         if (!std::cin || message == "quit") break;
         if (message.empty()) continue;
+
+        {
+            std::lock_guard<std::mutex> lock(io_mutex);
+            std::cout << "\033[1A\r\033[K";  // go up one line, clear it
+            std::cout << "<" << username << "> " << message << "\n";
+            std::cout << PROMPT << std::flush;        }
 
         send(sock, message.c_str(), message.size(), 0);
     }
