@@ -30,14 +30,12 @@ void receive_loop(int sock) {
 
         switch (type) {
             case MSG_REQ_PUBKEY: {
-                // SEND PUBLIC KEY
                 unsigned long long pubkey = dh.getPublicKey();
                 std::cout << "Requested public key, and now sending" << std::endl;
                 send(sock, &pubkey, sizeof(pubkey), 0);
                 break;
             }
             case MSG_PUBKEY: {
-                // READ OTHER PUBKEY
                 unsigned long long theirKey;
                 recv(sock, &theirKey, sizeof(theirKey), 0);
                 bool result = dh.computeSharedSecret(theirKey);
@@ -52,6 +50,9 @@ void receive_loop(int sock) {
                 std::cout << "\r\x1b[2K" << msg << std::endl;
                 std::cout << PROMPT << std::flush;
                 break;
+            }
+            default: {
+                std::cout << "You received an unknown message type: " << type << std::endl;
             }
         }
     }

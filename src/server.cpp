@@ -40,12 +40,15 @@ std::mutex pair_mutex;
 
 std::condition_variable handshake_cv;
 std::mutex handshake_mutex;
+bool handshake_ready = false;
 
 std::vector<Chat> chats;
 std::mutex chats_mutex;
 
 bool do_dh_handshake(Client client, Chat& chat) {
     std::cout << "Call the handshake method" << std::endl;
+
+
     // 1. Send a request to client to send public key
     MessageType type = MSG_REQ_PUBKEY;
     send(client.socket, &type, 1, 0);
@@ -64,31 +67,42 @@ bool do_dh_handshake(Client client, Chat& chat) {
         chat.pubkey2 = pubkey;
     }
 
-    if (chat.pubkey1 && chat.pubkey2 != 0) {
-        handshake_cv.notify_one();
-    }
-
     {
         std::unique_lock<std::mutex> lock(handshake_mutex);
-        handshake_cv.wait(lock);
+        if (chat.pubkey1 != 0 && chat.pubkey2 != 0) {
+            handshake_ready = true;
+            handshake_cv.notify_one();
+        }
     }
+    {
+        std::unique_lock<std::mutex> lock(handshake_mutex);
+        handshake_cv.wait(lock, [] { return handshake_ready; });
+    }
+
+    std::cout << "Pubkey1: " << chat.pubkey1 << ", Username: " << chat.client1.name << std::endl;
+    std::cout << "Pubkey2: " << chat.pubkey2 << ", Username: " << chat.client2.name << std::endl;
+
 
     if (chat.client1.socket != client.socket) {
         long long other_pubkey = chat.pubkey1;
         MessageType type = MSG_PUBKEY;
         send(client.socket, &type, 1, 0);
         send(client.socket, &other_pubkey, sizeof(other_pubkey), 0);
+    } else if (chat.client2.socket != client.socket) {
+        long long other_pubkey = chat.pubkey2;
+        MessageType type = MSG_PUBKEY;
+        send(client.socket, &type, 1, 0);
+        send(client.socket, &other_pubkey, sizeof(other_pubkey), 0);
     }
-
-    std::cout << "Pubkey1: " << chat.pubkey1 << ", Username: " << chat.client1.name << std::endl;
-    std::cout << "Pubkey2: " << chat.pubkey2 << ", Username: " << chat.client2.name << std::endl;
 
     MessageType success_computed_secret;
     bytes = recv(client.socket, &success_computed_secret, sizeof(success_computed_secret), 0);
     if (bytes <= 0 || success_computed_secret == MSG_COMPUTE_SHARED_SECRET_FAILING) {
+        std::cout << "Failed to compute shared secret successfully" << std::endl;
         return false;
     }
 
+    std::cout << "Shared secret is computed successfully" << std::endl;
     return true;
 }
 
@@ -148,13 +162,15 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
             }
             if (my_chat != nullptr) {
                 can_connect = do_dh_handshake(client, *my_chat);
+                std::cout << "Found the other client as waiting" << std::endl;
             }
         }
     }
 
     // Read loop for this client
     if (can_connect) {
-        while (true) {
+        Chat *chat = find_my_chat(client_fd);
+        while (true && chat != nullptr) {
             bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
             if (bytes <= 0) break;
             string message(buffer, bytes);
@@ -163,14 +179,13 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
             {
                 std::lock_guard<std::mutex> lock(chats_mutex);
                 const string wire = username + ": " + message;
-                for (const Chat &chat: chats) {
-                    if (chat.client1.socket == client_fd) {
-                        std::cout << "sending message to client2\n";
-                        send(chat.client2.socket, wire.c_str(), wire.size(), 0);
-                    } else if (chat.client2.socket == client_fd) {
-                        std::cout << "sending message to client1\n";
-                        send(chat.client1.socket, wire.c_str(), wire.size(), 0);
-                    }
+                MessageType type = MSG_CHAT;
+                if (chat->client1.socket == client_fd) {
+                    send(chat->client2.socket, &type, 1, 0);
+                    send(chat->client2.socket, wire.c_str(), wire.size(), 0);
+                } else if (chat->client2.socket == client_fd) {
+                    send(chat->client1.socket, &type, 1, 0);
+                    send(chat->client1.socket, wire.c_str(), wire.size(), 0);
                 }
             }
 
