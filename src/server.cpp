@@ -8,6 +8,7 @@
 #include <mutex>
 #include <algorithm>
 #include <optional>
+#include "protocol.h"
 
 using std::string;
 
@@ -26,14 +27,80 @@ struct Client {
 struct Chat {
     Client client1;
     Client client2;
-
+    unsigned long long pubkey1 = 0;
+    unsigned long long pubkey2 = 0;
+    bool paired = false;
     Chat(Client client1, Client client2) : client1(client1), client2(client2) {}
 };
 
 std::optional<Client> waiting_client;
 
+std::condition_variable pair_cv;
+std::mutex pair_mutex;
+
+std::condition_variable handshake_cv;
+std::mutex handshake_mutex;
+
 std::vector<Chat> chats;
 std::mutex chats_mutex;
+
+bool do_dh_handshake(Client client, Chat& chat) {
+    std::cout << "Call the handshake method" << std::endl;
+    // 1. Send a request to client to send public key
+    MessageType type = MSG_REQ_PUBKEY;
+    send(client.socket, &type, 1, 0);
+
+    // 2. Receive the public key
+    unsigned long long pubkey = 0;
+    ssize_t bytes = recv(client.socket, &pubkey, sizeof(pubkey), 0);
+    if (bytes <= 0)
+        return false;
+    std::cout << "Received pubkey: " << pubkey << std::endl;
+
+    // 3. Store the public key in the Chat struct
+    if (chat.client1.socket == client.socket) {
+        chat.pubkey1 = pubkey;
+    } else {
+        chat.pubkey2 = pubkey;
+    }
+
+    if (chat.pubkey1 && chat.pubkey2 != 0) {
+        handshake_cv.notify_one();
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(handshake_mutex);
+        handshake_cv.wait(lock);
+    }
+
+    if (chat.client1.socket != client.socket) {
+        long long other_pubkey = chat.pubkey1;
+        MessageType type = MSG_PUBKEY;
+        send(client.socket, &type, 1, 0);
+        send(client.socket, &other_pubkey, sizeof(other_pubkey), 0);
+    }
+
+    std::cout << "Pubkey1: " << chat.pubkey1 << ", Username: " << chat.client1.name << std::endl;
+    std::cout << "Pubkey2: " << chat.pubkey2 << ", Username: " << chat.client2.name << std::endl;
+
+    MessageType success_computed_secret;
+    bytes = recv(client.socket, &success_computed_secret, sizeof(success_computed_secret), 0);
+    if (bytes <= 0 || success_computed_secret == MSG_COMPUTE_SHARED_SECRET_FAILING) {
+        return false;
+    }
+
+    return true;
+}
+
+Chat* find_my_chat(int client_fd) {
+    std::lock_guard<std::mutex> lock(chats_mutex);
+    for (Chat& chat: chats) {
+        if (chat.client1.socket == client_fd || chat.client2.socket == client_fd) {
+            return &chat;
+        }
+    }
+    return nullptr;
+}
 
 void handle_client(int client_fd, sockaddr_in client_addr) {
     char buffer[BUFFER_SIZE] = {0};
@@ -46,42 +113,69 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
         return;
     }
 
+    bool can_connect = false;
     string username(buffer, bytes);
+    Client client(username, client_fd, client_addr);
+    std::optional<Client> other_client;
     {
         std::lock_guard<std::mutex> lock(chats_mutex);
-        Client client(username, client_fd, client_addr);
 
         if (waiting_client.has_value()) {
+            other_client = waiting_client.value();
             Chat chat(client, waiting_client.value());
             chats.push_back(chat);
             waiting_client.reset();
+            pair_cv.notify_one();
         } else {
             waiting_client = client;
         }
     }
-
-    // Read loop for this client
-    while (true) {
-        bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
-        if (bytes <= 0) break;
-        string message(buffer, bytes);
-        std::cout << username << ": " << message << std::endl;
-        std::cout << "Waiting client: " << waiting_client->name << std::endl;
-        {
-            std::lock_guard<std::mutex> lock(chats_mutex);
-            const string wire = username + ": " + message;
-            for (const Chat& chat : chats) {
-                if (chat.client1.socket == client_fd) {
-                    std::cout << "sending message to client2\n";
-                    send(chat.client2.socket, wire.c_str(), wire.size(), 0);
-                } else if (chat.client2.socket == client_fd) {
-                    std::cout << "sending message to client1\n";
-                    send(chat.client1.socket, wire.c_str(), wire.size(), 0);
-                }
+    {
+        Chat *my_chat = nullptr;
+        if (other_client) {
+            my_chat = find_my_chat(client_fd);
+            can_connect = do_dh_handshake(client, *my_chat);
+            std::cout << "Found the other client" << std::endl;
+        } else {
+            string msg = "Waiting for other client...";
+            MessageType type = MSG_CHAT;
+            send(client.socket, &type, 1, 0);
+            send(client.socket, msg.c_str(), msg.size(), 0);
+            {
+                std::unique_lock<std::mutex> lock(pair_mutex);
+                pair_cv.wait(lock);
+                my_chat = find_my_chat(client_fd);
+            }
+            if (my_chat != nullptr) {
+                can_connect = do_dh_handshake(client, *my_chat);
             }
         }
+    }
 
-        memset(buffer, 0, BUFFER_SIZE);
+    // Read loop for this client
+    if (can_connect) {
+        while (true) {
+            bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
+            if (bytes <= 0) break;
+            string message(buffer, bytes);
+            std::cout << username << ": " << message << std::endl;
+            std::cout << "Waiting client: " << waiting_client->name << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(chats_mutex);
+                const string wire = username + ": " + message;
+                for (const Chat &chat: chats) {
+                    if (chat.client1.socket == client_fd) {
+                        std::cout << "sending message to client2\n";
+                        send(chat.client2.socket, wire.c_str(), wire.size(), 0);
+                    } else if (chat.client2.socket == client_fd) {
+                        std::cout << "sending message to client1\n";
+                        send(chat.client1.socket, wire.c_str(), wire.size(), 0);
+                    }
+                }
+            }
+
+            memset(buffer, 0, BUFFER_SIZE);
+        }
     }
 
     // Disconnect
