@@ -1,0 +1,10 @@
+#pragma once
+
+enum MessageType : uint8_t {
+    MSG_CHAT = 0x01,
+    MSG_REQ_PUBKEY = 0x02,
+    MSG_PUBKEY = 0x03,
+    MSG_CHAT_START = 0x04,
+    MSG_COMPUTE_SHARED_SECRET_SUCCESS = 0x05,
+    MSG_COMPUTE_SHARED_SECRET_FAILING = 0x06,
+};

@@ -7,6 +7,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include "DiffieHellman.h"
+#include "protocol.h"
 
 using std::string;
 
@@ -14,20 +16,44 @@ constexpr int PORT = 8080;
 constexpr int BUFFER_SIZE = 1024;
 const string PROMPT = "Enter your message: ";
 std::mutex io_mutex;
+DiffieHellman dh;
 
 void receive_loop(int sock) {
     char buffer[BUFFER_SIZE];
     while (true) {
-        const int bytes = recv(sock, buffer, BUFFER_SIZE, 0);
-        string raw(buffer, bytes);
+        uint8_t type;
+        int bytes = recv(sock, &type, 1, 0);
         if (bytes <= 0) {
-            std::lock_guard<std::mutex> lock(io_mutex);
             std::cout << "\nServer disconnected." << std::endl;
             break;
         }
 
-        std::cout << "\r\x1b[2K" << raw << std::endl;
-        std::cout << PROMPT << std::flush;
+        switch (type) {
+            case MSG_REQ_PUBKEY: {
+                // SEND PUBLIC KEY
+                unsigned long long pubkey = dh.getPublicKey();
+                std::cout << "Requested public key, and now sending" << std::endl;
+                send(sock, &pubkey, sizeof(pubkey), 0);
+                break;
+            }
+            case MSG_PUBKEY: {
+                // READ OTHER PUBKEY
+                unsigned long long theirKey;
+                recv(sock, &theirKey, sizeof(theirKey), 0);
+                bool result = dh.computeSharedSecret(theirKey);
+                int type = result ? MSG_COMPUTE_SHARED_SECRET_SUCCESS : MSG_COMPUTE_SHARED_SECRET_FAILING;
+                send(sock, &type, 1, 0);
+                break;
+            }
+            case MSG_CHAT: {
+                char buffer[BUFFER_SIZE];
+                int len = recv(sock, buffer, BUFFER_SIZE, 0);
+                string msg(buffer, len);
+                std::cout << "\r\x1b[2K" << msg << std::endl;
+                std::cout << PROMPT << std::flush;
+                break;
+            }
+        }
     }
 }
 
