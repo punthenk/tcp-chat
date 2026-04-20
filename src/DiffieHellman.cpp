@@ -9,7 +9,7 @@ DiffieHellman::DiffieHellman() {
     publicKey = calculatePublicKey(g, privateKey, p);
 }
 
-long long int DiffieHellman::generatePrivateKey(unsigned long long p) {
+unsigned long long int DiffieHellman::generatePrivateKey(unsigned long long p) {
     std::random_device rd;
     std::mt19937_64 gen(rd());
     std::uniform_int_distribution<unsigned long long> dist(1, p - 2);
@@ -28,14 +28,14 @@ unsigned long long int DiffieHellman::modPow(long long int base, long long int e
     return result;
 }
 
-long long int DiffieHellman::calculatePublicKey(long long int g, long long int privateKey, long long int p) {
+unsigned long long int DiffieHellman::calculatePublicKey(long long int g, long long int privateKey, long long int p) {
     return modPow(g, privateKey, p);
 }
 
-long long int DiffieHellman::getPublicKey() {
+unsigned long long int DiffieHellman::getPublicKey() {
     return publicKey;
 }
 
-long long int DiffieHellman::computeSharedSecret(long long int otherPublicKey) {
+unsigned long long int DiffieHellman::computeSharedSecret(long long int otherPublicKey) {
     return modPow(otherPublicKey, privateKey, p);
 }
