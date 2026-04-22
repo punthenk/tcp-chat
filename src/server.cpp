@@ -175,21 +175,31 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
         }
 
         while (my_chat->paired == true) {
-            bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
+            // 1. Receive the iv
+            unsigned char iv[16];
+            recv(client_fd, &iv, 16, 0);
 
-            if (bytes <= 0)
+            // 2. Receive the length of the ciphertext
+            uint32_t len;
+            recv(client_fd, &len, sizeof(len), 0);
+
+            // If length is 0 that means the real data is not coming through right
+            if (len <= 0)
                 break;
 
-            string message(buffer, bytes);
+            // 3. Receive the ciphertext
+            std::vector<unsigned char> data(len);
+            recv(client_fd, data.data(), len, 0);
+
             {
                 std::lock_guard<std::mutex> lock(chats_mutex);
-                const string wire = "<" + username + "> " + message;
                 MessageType type = MSG_CHAT;
                 send(other_client_socket, &type, 1, 0);
-                send(other_client_socket, wire.c_str(), wire.size(), 0);
-            }
 
-            memset(buffer, 0, BUFFER_SIZE);
+                send(other_client_socket, iv, 16, 0);
+                send(other_client_socket, &len, sizeof(len), 0);
+                send(other_client_socket, data.data(), len, 0);
+            }
         }
     }
 
