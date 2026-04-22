@@ -1,6 +1,5 @@
 #include <iostream>
 #include <string>
-#include <cstring>
 #include <thread>
 #include <mutex>
 #include <sys/socket.h>
@@ -9,6 +8,7 @@
 #include <unistd.h>
 #include "DiffieHellman.h"
 #include "protocol.h"
+#include "CryptoUtils.h"
 
 using std::string;
 
@@ -17,6 +17,9 @@ constexpr int BUFFER_SIZE = 1024;
 const string PROMPT = "> ";
 std::mutex io_mutex;
 DiffieHellman dh;
+
+unsigned long long shared_secret = 0;
+CryptoUtils::Key hashed_key;
 
 void receive_loop(int sock, string username) {
     char buffer[BUFFER_SIZE];
@@ -38,15 +41,25 @@ void receive_loop(int sock, string username) {
             case MSG_PUBKEY: {
                 unsigned long long theirKey;
                 recv(sock, &theirKey, sizeof(theirKey), 0);
-                bool result = dh.computeSharedSecret(theirKey);
+                auto result = dh.computeSharedSecret(theirKey);
                 int type = result ? MSG_COMPUTE_SHARED_SECRET_SUCCESS : MSG_COMPUTE_SHARED_SECRET_FAILING;
                 send(sock, &type, 1, 0);
+                if (type == MSG_COMPUTE_SHARED_SECRET_SUCCESS) {
+                    shared_secret = result;
+                }
                 break;
             }
             case MSG_CHAT: {
-                char buffer[BUFFER_SIZE];
-                int len = recv(sock, buffer, BUFFER_SIZE, 0);
-                string msg(buffer, len);
+                unsigned char iv[16];
+                recv(sock, iv, 16, 0);
+
+                uint32_t len;
+                recv(sock, &len, sizeof(len), 0);
+
+                std::vector<unsigned char> ciphertext(len);
+                recv(sock, ciphertext.data(), len, 0);
+
+                string msg = CryptoUtils::decryptMessage(ciphertext, iv, hashed_key);
                 {
                     std::lock_guard<std::mutex> lock(io_mutex);
                     std::cout << "\r\033[K";
@@ -79,7 +92,8 @@ int main() {
     struct sockaddr_in serv_addr;
     char buffer[BUFFER_SIZE] = {0};
     string message;
-    
+    unsigned char iv[16];
+
     string username;
     std::cout << "Enter your username: ";
     std::getline(std::cin, username);
@@ -123,9 +137,17 @@ int main() {
             std::lock_guard<std::mutex> lock(io_mutex);
             std::cout << "\033[1A\r\033[K";  // go up one line, clear it
             std::cout << "<" << username << "> " << message << "\n";
-            std::cout << PROMPT << std::flush;        }
+            std::cout << PROMPT << std::flush;
+        }
 
-        send(sock, message.c_str(), message.size(), 0);
+        message = "<" + username + "> " + message;
+        hashed_key = CryptoUtils::deriveKey(shared_secret);
+        auto ciphertext = CryptoUtils::encryptMessage(message, iv, hashed_key);
+        uint32_t len = ciphertext.size();
+
+        send(sock, iv, 16, 0);
+        send(sock, &len, sizeof(len), 0);
+        send(sock, ciphertext.data(), len, 0);
     }
 
     close(sock);
