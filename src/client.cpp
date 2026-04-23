@@ -41,12 +41,13 @@ void receive_loop(int sock, string username) {
             case MSG_PUBKEY: {
                 unsigned long long theirKey;
                 recv(sock, &theirKey, sizeof(theirKey), 0);
-                auto result = dh.computeSharedSecret(theirKey);
-                int type = result ? MSG_COMPUTE_SHARED_SECRET_SUCCESS : MSG_COMPUTE_SHARED_SECRET_FAILING;
+                shared_secret = dh.computeSharedSecret(theirKey);
+                hashed_key = CryptoUtils::deriveKey(shared_secret);
+                std::cout << "Shared secret: " << shared_secret << std::endl;
+                int type = MSG_COMPUTE_SHARED_SECRET_SUCCESS;
                 send(sock, &type, 1, 0);
-                if (type == MSG_COMPUTE_SHARED_SECRET_SUCCESS) {
-                    shared_secret = result;
-                }
+                std::cout << type << std::endl;
+                std::cout << "The shared_secret value is written\n";
                 break;
             }
             case MSG_CHAT: {
@@ -59,8 +60,8 @@ void receive_loop(int sock, string username) {
                 std::vector<unsigned char> ciphertext(len);
                 recv(sock, ciphertext.data(), len, 0);
 
-                string msg = CryptoUtils::decryptMessage(ciphertext, iv, hashed_key);
                 {
+                    string msg = CryptoUtils::decryptMessage(ciphertext, iv, hashed_key);
                     std::lock_guard<std::mutex> lock(io_mutex);
                     std::cout << "\r\033[K";
                     std::cout << msg << "\n";
@@ -97,7 +98,7 @@ int main() {
     string username;
     std::cout << "Enter your username: ";
     std::getline(std::cin, username);
-    
+
     // Creating socket
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Socket creation error");
@@ -118,7 +119,7 @@ int main() {
         perror("Connection Failed");
         return -1;
     }
-    
+
     // Send username
     send(sock, username.c_str(), username.size(), 0);
 
@@ -141,7 +142,6 @@ int main() {
         }
 
         message = "<" + username + "> " + message;
-        hashed_key = CryptoUtils::deriveKey(shared_secret);
         auto ciphertext = CryptoUtils::encryptMessage(message, iv, hashed_key);
         uint32_t len = ciphertext.size();
 
