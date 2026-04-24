@@ -90,12 +90,27 @@ bool do_dh_handshake(Client client, Chat& chat) {
     send(client.socket, &type, 1, 0);
     send(client.socket, &other_pubkey, sizeof(other_pubkey), 0);
 
-    // Check if the client computed the shared secret successfully
+    type = MSG_VERIFY_REQ;
+    send(client.socket, &type, 1, 0);
+    // Pass through the data
+    unsigned char iv[16];
+    recv(client.socket, iv, 16, 0);
+    uint32_t len;
+    recv(client.socket, &len, sizeof(len), 0);
+    std::vector<unsigned char> data(len);
+    recv(client.socket, data.data(), len, 0);
+
+    type = MSG_VERIFY;
+    send(client.socket, &type, 1, 0);
+    send(client.socket, iv, 16, 0);
+    send(client.socket, &len, sizeof(len), 0);
+    send(client.socket, data.data(), len, 0);
+
+    // Receive if the key exchange went successful
     MessageType success_computed_secret;
-    bytes = recv(client.socket, &success_computed_secret, sizeof(success_computed_secret), 0);
-    if (bytes <= 0 || success_computed_secret == MSG_COMPUTE_SHARED_SECRET_FAILING) {
+    bytes = recv(client.socket, &success_computed_secret, 1, 0);
+    if (bytes <= 0 || success_computed_secret == MSG_COMPUTE_SHARED_SECRET_FAILING)
         return false;
-    }
 
     return true;
 }

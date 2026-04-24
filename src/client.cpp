@@ -27,7 +27,7 @@ void receive_loop(int sock, string username) {
         uint8_t type;
         int bytes = recv(sock, &type, 1, 0);
         if (bytes <= 0) {
-            std::cout << "\nServer disconnected." << std::endl;
+            std::cout << "\nYou are disconnected." << std::endl;
             break;
         }
 
@@ -43,11 +43,38 @@ void receive_loop(int sock, string username) {
                 recv(sock, &theirKey, sizeof(theirKey), 0);
                 shared_secret = dh.computeSharedSecret(theirKey);
                 hashed_key = CryptoUtils::deriveKey(shared_secret);
-                std::cout << "Shared secret: " << shared_secret << std::endl;
+                break;
+            }
+            case MSG_VERIFY_REQ: {
+                unsigned char iv[16];
+                string msg = "OK";
+                auto ciphertext = CryptoUtils::encryptMessage(msg, iv, hashed_key);
+                uint32_t len = ciphertext.size();
+                send(sock, iv, 16, 0);
+                send(sock, &len, sizeof(len), 0);
+                send(sock, ciphertext.data(), len, 0);
+                break;
+            }
+            case MSG_VERIFY: {
+                unsigned char iv[16];
+                recv(sock, iv, 16, 0);
+
+                uint32_t len;
+                recv(sock, &len, sizeof(len), 0);
+
+                std::vector<unsigned char> ciphertext(len);
+                recv(sock, ciphertext.data(), len, 0);
+                string plain_message = CryptoUtils::decryptMessage(ciphertext, iv, hashed_key);
                 int type = MSG_COMPUTE_SHARED_SECRET_SUCCESS;
+                if (plain_message != "OK") {
+                    {
+                        std::lock_guard<std::mutex> lock(io_mutex);
+                        std::cout << "\r\033[K";
+                        std::cout << "There went something wrong with connecting safely to the other client. Please try again" << std::endl;
+                    }
+                    type = MSG_COMPUTE_SHARED_SECRET_FAILING;
+                }
                 send(sock, &type, 1, 0);
-                std::cout << type << std::endl;
-                std::cout << "The shared_secret value is written\n";
                 break;
             }
             case MSG_CHAT: {
@@ -77,7 +104,7 @@ void receive_loop(int sock, string username) {
                 break;
             }
             case MSG_CONNECT_TO_CHAT: {
-                std::cout << "\r\x1b[2K\r" << "**** You are connect to a chat as " << username << "****" << std::endl;
+                std::cout << "\r\x1b[2K\r" << "**** You are connect to a chat as " << username << " ****" << std::endl;
                 std::cout << PROMPT << std::flush;
                 break;
             }
