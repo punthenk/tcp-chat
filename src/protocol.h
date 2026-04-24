@@ -9,4 +9,6 @@ enum MessageType : uint8_t {
     MSG_COMPUTE_SHARED_SECRET_FAILING = 0x06,
     MSG_WAIT = 0x07,
     MSG_CONNECT_TO_CHAT = 0x08,
+    MSG_VERIFY_REQ = 0x09,
+    MSG_VERIFY = 0x0a,
 };
