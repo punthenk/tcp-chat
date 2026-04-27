@@ -115,6 +115,26 @@ bool do_dh_handshake(Client client, Chat& chat) {
     return true;
 }
 
+bool disconnect_client(Chat& chat, Client client) {
+    std::lock_guard<std::mutex> lock(chats_mutex);
+
+    chat.paired = false;
+    chats.erase(
+        std::remove_if(chats.begin(), chats.end(),
+                       [socket = client.socket](const Chat &chat) {
+                           if (chat.client1.socket == socket || chat.client2.socket == socket) {
+                               close(chat.client1.socket);
+                               close(chat.client2.socket);
+                               return true;
+                           }
+                           return false;
+                       }),
+        chats.end()
+    );
+
+    return true;
+}
+
 Chat* find_my_chat(int client_fd) {
     std::lock_guard<std::mutex> lock(chats_mutex);
     for (Chat& chat: chats) {
@@ -234,33 +254,12 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
                 case MSG_DISCONNECT: {
                     type = MSG_DISCONNECT;
                     send(other_client_socket, &type, 1, 0);
+                    disconnect_client(*my_chat, client);
                     break;
                 }
             }
         }
     }
-
-    // Disconnect
-    {
-        std::lock_guard<std::mutex> lock(chats_mutex);
-        my_chat->paired = false;
-        if (waiting_client.has_value() && waiting_client->socket == client_fd) {
-            waiting_client.reset();
-        }
-
-        chats.erase(std::remove_if(chats.begin(), chats.end(),
-                                   [client_fd](const Chat &chat) {
-                                       if (chat.client1.socket == client_fd) {
-                                           return true;
-                                       }
-                                       if (chat.client2.socket == client_fd) {
-                                           return true;
-                                       }
-                                       return false;
-                                   }), chats.end());
-    }
-
-    close(client_fd);
 }
 
 int main() {
