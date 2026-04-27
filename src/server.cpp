@@ -199,8 +199,12 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
             recv(client_fd, &len, sizeof(len), 0);
 
             // If length is 0 that means the real data is not coming through right
-            if (len <= 0)
+            if (len <= 0) {
+                MessageType type = MSG_DISCONNECT;
+                send(other_client_socket, &type, 1, 0);
+                send(client_fd, &type, 1, 0);
                 break;
+            }
 
             // 3. Receive the ciphertext
             std::vector<unsigned char> data(len);

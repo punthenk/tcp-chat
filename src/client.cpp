@@ -22,13 +22,12 @@ unsigned long long shared_secret = 0;
 CryptoUtils::Key hashed_key;
 
 void receive_loop(int sock, string username) {
-    char buffer[BUFFER_SIZE];
     while (true) {
         uint8_t type;
         int bytes = recv(sock, &type, 1, 0);
         if (bytes <= 0) {
             std::cout << "\nYou are disconnected." << std::endl;
-            break;
+            exit(0);
         }
 
         switch (type) {
@@ -107,6 +106,10 @@ void receive_loop(int sock, string username) {
                 std::cout << "\r\x1b[2K\r" << "**** You are connect to a chat as " << username << " ****" << std::endl;
                 std::cout << PROMPT << std::flush;
                 break;
+            }
+            case MSG_DISCONNECT: {
+                std::cout << "\r\033[K" << "The other user has disconnected";
+                exit(0);
             }
             default: {
                 std::cout << "You received an unknown message type: " << type << std::endl;

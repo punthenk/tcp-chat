@@ -11,4 +11,5 @@ enum MessageType : uint8_t {
     MSG_CONNECT_TO_CHAT = 0x08,
     MSG_VERIFY_REQ = 0x09,
     MSG_VERIFY = 0x0a,
+    MSG_DISCONNECT = 0x0b,
 };
