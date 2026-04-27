@@ -126,6 +126,7 @@ int main(int argc, char* argv[]) {
     char buffer[BUFFER_SIZE] = {0};
     string message;
     unsigned char iv[16];
+    MessageType type;
 
     string username;
     std::cout << "Enter your username: ";
@@ -163,7 +164,11 @@ int main(int argc, char* argv[]) {
     while (true) {
         std::getline(std::cin, message);
 
-        if (!std::cin || message == "quit") break;
+        if (!std::cin || message == "quit") {
+            MessageType type = MSG_DISCONNECT;
+            send(sock, &type, 1, 0);
+            break;
+        }
         if (message.empty()) continue;
 
         {
@@ -173,10 +178,12 @@ int main(int argc, char* argv[]) {
             std::cout << PROMPT << std::flush;
         }
 
+        type = MSG_CHAT;
         message = "<" + username + "> " + message;
         auto ciphertext = CryptoUtils::encryptMessage(message, iv, hashed_key);
         uint32_t len = ciphertext.size();
 
+        send(sock, &type, 1, 0);
         send(sock, iv, 16, 0);
         send(sock, &len, sizeof(len), 0);
         send(sock, ciphertext.data(), len, 0);

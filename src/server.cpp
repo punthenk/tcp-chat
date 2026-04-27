@@ -190,34 +190,52 @@ void handle_client(int client_fd, sockaddr_in client_addr) {
         }
 
         while (my_chat->paired == true) {
-            // 1. Receive the iv
-            unsigned char iv[16];
-            recv(client_fd, &iv, 16, 0);
-
-            // 2. Receive the length of the ciphertext
-            uint32_t len;
-            recv(client_fd, &len, sizeof(len), 0);
-
-            // If length is 0 that means the real data is not coming through right
-            if (len <= 0) {
+            uint8_t type = 0;
+            int bytes = recv(client_fd, &type, 1, 0);
+            if (bytes <= 0) {
                 MessageType type = MSG_DISCONNECT;
-                send(other_client_socket, &type, 1, 0);
                 send(client_fd, &type, 1, 0);
-                break;
+                send(other_client_socket, &type, 1, 0);
             }
 
-            // 3. Receive the ciphertext
-            std::vector<unsigned char> data(len);
-            recv(client_fd, data.data(), len, 0);
+            switch (type) {
+                case MSG_CHAT: {
+                    // 1. Receive the iv
+                    unsigned char iv[16];
+                    recv(client_fd, &iv, 16, 0);
 
-            {
-                std::lock_guard<std::mutex> lock(chats_mutex);
-                MessageType type = MSG_CHAT;
-                send(other_client_socket, &type, 1, 0);
+                    // 2. Receive the length of the ciphertext
+                    uint32_t len;
+                    recv(client_fd, &len, sizeof(len), 0);
 
-                send(other_client_socket, iv, 16, 0);
-                send(other_client_socket, &len, sizeof(len), 0);
-                send(other_client_socket, data.data(), len, 0);
+                    // If length is 0 that means the real data is not coming through right
+                    if (len <= 0) {
+                        MessageType type = MSG_DISCONNECT;
+                        send(other_client_socket, &type, 1, 0);
+                        send(client_fd, &type, 1, 0);
+                        break;
+                    }
+
+                    // 3. Receive the ciphertext
+                    std::vector<unsigned char> data(len);
+                    recv(client_fd, data.data(), len, 0);
+
+                    {
+                        std::lock_guard<std::mutex> lock(chats_mutex);
+                        MessageType type = MSG_CHAT;
+                        send(other_client_socket, &type, 1, 0);
+
+                        send(other_client_socket, iv, 16, 0);
+                        send(other_client_socket, &len, sizeof(len), 0);
+                        send(other_client_socket, data.data(), len, 0);
+                    }
+                    break;
+                }
+                case MSG_DISCONNECT: {
+                    type = MSG_DISCONNECT;
+                    send(other_client_socket, &type, 1, 0);
+                    break;
+                }
             }
         }
     }
